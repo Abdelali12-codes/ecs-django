@@ -6,14 +6,8 @@ on:
       - master
 
 env:
-  BUCKET_NAME: ${{ secrets.BUCKET_NAME }}
   ACCOUNT: ${{ secrets.ACCOUNT }}
   REGION: ${{ secrets.REGION }}
-  AWS_REGION: ${{ secrets.REGION }}
-  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-  DB_NAME: ${{ secrets.DB_NAME }}
-  DB_USER: ${{ secrets.DB_USER }}
   
 
 jobs:
@@ -21,8 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       cdkstack: ${{ steps.changes.outputs.cdkstack }}
-      flaskapp: ${{ steps.changes.outputs.flaskapp }}
-      reactapp: ${{ steps.changes.outputs.reactapp }}
+      flaskapp: ${{ steps.changes.outputs.djangoproject }}
     steps:
     - uses: actions/checkout@v3
     - uses: dorny/paths-filter@v2
@@ -31,23 +24,26 @@ jobs:
         filters: |
           cdkstack:
             - 'cdk/**'
-          flaskapp:
-            - 'flaskapp/**' 
-          reactapp:
-            - 'reactapp/**'
+          djangoproject:
+            - 'djangoproject/**' 
   cdkstack:
+    permissions:
+      id-token: write # This is required for requesting the JWT
+      contents: read  # This is required for actions/checkout
     runs-on: ubuntu-latest
     needs: changes
     defaults:
       run:
         working-directory: ./cdk
-    outputs:
-      distributionid: ${{ steps.distributionid.outputs.value }}
-      dbhost: ${{ steps.dbhost.outputs.value }}
-      dbpassword: ${{ steps.dbpassword.outputs.secretvalue }}
     steps:
     - name: Checkout code
       uses: actions/checkout@v2
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4 
+      with:
+        role-to-assume: ${{ secrets.role_arn }}
+        role-session-name: oidcsessionName
+        aws-region: $REGION
 
     - name: Install Node.js
       uses: actions/setup-node@v1
@@ -76,144 +72,12 @@ jobs:
       run: pip install -r requirements.txt
 
     - name: Cdk Bootstrap
-      run: cdk bootstrap -c bucket_name=$BUCKET_NAME -c db_name=$DB_NAME -c db_user=$DB_USER
+      run: cdk bootstrap
   
 
     - name: Cdk Synth
-      run: cdk synth -c bucket_name=$BUCKET_NAME -c db_name=$DB_NAME -c db_user=$DB_USER
+      run: cdk synth
      
     - name: Cdk Deploy
-      run: cdk deploy -c bucket_name=$BUCKET_NAME -c db_name=$DB_NAME -c db_user=$DB_USER --outputs-file outputs.json --require-approval never
+      run: cdk deploy --require-approval never
       
-    - name: Extract db password
-      id: dbpassword
-      run: |
-        secretvalue=$(aws secretsmanager get-secret-value --secret-id rdssecret --query SecretString)
-        echo "secretvalue=$secretvalue" >> $GITHUB_OUTPUT
-        
-    - name: extract distributionid from outputs.json
-      uses: sergeysova/jq-action@v2
-      id: distributionid
-      with:
-        cmd: 'jq -r .ecsotelstack.distributionid ./cdk/outputs.json'
-        
-    - name: extract dbhost from outputs.json
-      id: dbhost
-      uses: sergeysova/jq-action@v2
-      with:
-        cmd: 'jq -r .ecsotelstack.dbhost ./cdk/outputs.json'
-      
-
-
-  flaskapp:
-    runs-on: ubuntu-latest
-    needs: [ cdkstack, changes ]
-    #if: ${{ needs.changes.outputs.flaskapp == 'true' }}
-    defaults:
-      run:
-        working-directory: ./flaskapp
-    steps:
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v1
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.REGION }}
-    
-    - name: Debug Json
-      run: echo ${{ needs.cdkstack.outputs.dbpassword }}
-        
-    - name: dbpassword for rds 
-      uses: sergeysova/jq-action@v2
-      id: dbpassword
-      with:
-        cmd: 'jq -r .password ${{ fromJSON(needs.cdkstack.outputs.dbpassword) }}'
-        
-    - name: Login to Amazon ECR
-      id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v1
-
-    - name: Build Flask App
-      id: build-flask
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        ECR_REPOSITORY: flask-repo
-        IMAGE_TAG: ${{ github.sha }}
-      run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
-        
-    - name: Fill in the new image ID for flask app
-      id: task-def-flask
-      uses: aws-actions/amazon-ecs-render-task-definition@v1
-      with:
-        task-definition: task-definition.json
-        container-name: flask
-        image: ${{ steps.build-flask.outputs.image }}
-        environment-variables: |
-          MYSQL_HOST=${{ needs.cdkstack.outputs.dbhost }}
-          MYSQL_USER=$DB_USER
-          MYSQL_PASSWORD=${{ steps.dbpassword.outputs.value }}
-          MYSQL_DB=$DB_NAME
-        
-        
-    - name: Build Nginx Image
-      id: build-nginx
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        ECR_REPOSITORY: nginx-repo
-        IMAGE_TAG: ${{ github.sha }}
-      run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
-      working-directory: ./flaskapp/nginx
-        
-    - name: Fill in the new image ID for nginx app
-      id: task-def
-      uses: aws-actions/amazon-ecs-render-task-definition@v1
-      with:
-        task-definition: ${{ steps.task-def-flask.outputs.task-definition }}
-        container-name: nginx
-        image: ${{ steps.build-nginx.outputs.image }}
-
-    - name: Deploy Amazon ECS task definition
-      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
-      with:
-        task-definition: ${{ steps.task-def.outputs.task-definition }}
-        service: flask-service
-        cluster: ecs-cluster
-        wait-for-service-stability: true
-    
-
-  reactapp:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./reactapp
-    needs: [ cdkstack, flaskapp, changes ]
-    #if: ${{ needs.changes.outputs.reactapp }}
-    steps:
-    - name: Install Node.js
-      uses: actions/setup-node@v1
-      with:
-        node-version: '14.x'
-        
-    - name: install dependencies
-      run: npm install
-      
-      
-    - name: react build
-      run: npm run build 
-      
-    - name: export code to s3
-      run: aws s3 sync build s3://$BUCKET_NAME
-      env:
-        AWS_EC2_METADATA_DISABLED: true
-        
-    
-    - name: cloudfront invalidation
-      run: aws cloudfront create-invalidation --distribution-id=${{ needs.cdkstack.outputs.distributionid }} --paths='/*'
-      env:
-        AWS_EC2_METADATA_DISABLED: true
