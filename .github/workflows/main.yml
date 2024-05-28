@@ -78,6 +78,6 @@ jobs:
     - name: Cdk Synth
       run: cdk synth
      
-    - name: Cdk Deploy
-      run: cdk deploy --require-approval never
+    # - name: Cdk Deploy
+    #   run: cdk deploy --require-approval never
       

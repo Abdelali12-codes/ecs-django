@@ -124,14 +124,14 @@ class CdkStack(Stack):
                  ),
               memory_reservation_mib= 2048,
               cpu= 1024,
-              health_check=ecs.HealthCheck(
-                    command=["CMD-SHELL", "curl -f http://127.0.0.1:8000/ping/ || exit 1"],
+              # health_check=ecs.HealthCheck(
+                    # command=["CMD-SHELL", "curl -f http://127.0.0.1:8000/ping/ || exit 1"],
                     # the properties below are optional
                     # interval=Duration.seconds(60),
-                    retries=3,
+                    # retries=3,
                     # start_period=Duration.seconds(120),
                     # timeout=Duration.seconds(60)
-                ),
+                # ),
               port_mappings=[
                   ecs.PortMapping(
                       container_port=8000,
