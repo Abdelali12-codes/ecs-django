@@ -43,7 +43,7 @@ jobs:
       with:
         role-to-assume: ${{ secrets.role_arn }}
         role-session-name: oidcsessionName
-        aws-region: $REGION
+        aws-region: ${{REGION}}
 
     - name: Install Node.js
       uses: actions/setup-node@v1
